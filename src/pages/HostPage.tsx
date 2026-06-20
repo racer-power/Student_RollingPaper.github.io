@@ -30,8 +30,8 @@ export function HostPage() {
     const r = await getRoomByCode(code);
     setRoom(r);
     if (r) {
-      setStats(await getStudentStats(r.id));
-      setPraises(await getPraises(r.id));
+      setStats(await getStudentStats(code));
+      setPraises(await getPraises(code));
     }
   }
 
@@ -41,8 +41,8 @@ export function HostPage() {
 
   useEffect(() => {
     if (!room) return;
-    return subscribeToRoom(room.id, load);
-  }, [room?.id]);
+    return subscribeToRoom(code!, load);
+  }, [room?.id, code]);
 
   async function changeStatus(status: Room['status']) {
     if (!room || !hostToken) {

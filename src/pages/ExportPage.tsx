@@ -20,8 +20,8 @@ export function ExportPage() {
     getRoomByCode(code).then(async (r) => {
       if (!r) return;
       setRoom(r);
-      setStudents(await getStudents(r.id));
-      setPraises(await getPraises(r.id));
+      setStudents(await getStudents(code));
+      setPraises(await getPraises(code));
     });
   }, [code]);
 

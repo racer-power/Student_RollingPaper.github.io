@@ -23,7 +23,7 @@ export function SelectNamePage() {
           return;
         }
         setRoom(r);
-        setStudents(await getStudents(r.id));
+        setStudents(await getStudents(r.code));
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));

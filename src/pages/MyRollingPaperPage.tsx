@@ -24,15 +24,15 @@ export function MyRollingPaperPage() {
     const r = await getRoomByCode(code);
     if (!r) return;
     setRoom(r);
-    const s = await getStudents(r.id);
+    const s = await getStudents(code);
     setStudents(s);
-    setPraises(await getPraisesForStudent(r.id, session.studentId));
+    setPraises(await getPraisesForStudent(code, session.studentId));
   }
 
   useEffect(() => {
     if (!room) return;
-    return subscribeToRoom(room.id, load);
-  }, [room?.id]);
+    return subscribeToRoom(code!, load);
+  }, [room?.id, code]);
 
   if (!code) return <Navigate to="/join" />;
   if (!session) return <Navigate to={`/join/${code}/select`} />;

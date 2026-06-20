@@ -1,34 +1,34 @@
 # 칭찬 롤링페이퍼
 
-교실에서 로그인 없이 사용하는 학급 칭찬 롤링페이퍼 웹앱입니다.
+교실에서 로그인 없이 사용하는 학급 칭찬 롤링페이퍼 웹앱입니다. **Vercel**에만 배포합니다 (Supabase 불필요).
 
-## 시작하기
+## 배포 (Vercel)
+
+1. GitHub 저장소 연결 → Vercel Import
+2. 별도 환경 변수 **설정 불필요**
+3. Push 시 자동 배포
+
+배포 URL: https://student-rolling-paper-github-io.vercel.app/
+
+## 로컬 개발
 
 ```bash
 npm install
-npm run dev
+npm run dev          # 프론트만 (API는 Vercel 배포 후 동작)
+npm run dev:vercel   # API 포함 전체 (Vercel CLI 필요)
 ```
 
-`.env` 파일에 Supabase URL과 anon key를 설정하세요. (`.env.example` 참고)
+## 데이터 저장
 
-## 사용 방법
+- Vercel Serverless API + **메모리 저장소** (24시간 유효)
+- 수업 중(약 30분~1시간) 학생 다기기 동시 접속 지원
+- 서버 재시작·콜드 스타트 시 데이터가 초기화될 수 있음 → **수업 후 PDF 저장 권장**
 
-1. **선생님**: 「학급 만들기」→ 학급명·학생 명단 입력 → 코드/QR 공유 → 「시작하기」
-2. **학생**: 「참여하기」→ 코드 입력 → 이름 선택 → 칭찬 작성
-3. **마무리**: 선생님이 「마무리하기」→ PDF/PNG 저장
+## 기능
 
-## 기술 스택
+- 학급 만들기 / 코드로 참여
+- 칭찬 작성 · 롤링페이퍼 보기
+- 교사 대시보드 · 전자칠판 모드
+- PDF/PNG/ZIP 내보내기
 
-- React + Vite + TypeScript
-- Supabase (Realtime)
-- jsPDF + html2canvas + JSZip (내보내기)
-
-## Vercel 배포
-
-1. GitHub 저장소 연결 후 Vercel에서 Import
-2. **Environment Variables** (Production·Preview·Development 모두):
-   - `VITE_SUPABASE_URL` — Supabase 프로젝트 URL
-   - `VITE_SUPABASE_ANON_KEY` — Supabase anon key
-3. 환경 변수 추가 후 **Redeploy** (빌드 시점에 `VITE_*` 값이 번들에 포함됨)
-
-로컬 `.env` 값은 Git에 올리지 마세요. Vercel 대시보드에서만 설정합니다.
+자세한 요구사항: [PRD.md](./PRD.md)

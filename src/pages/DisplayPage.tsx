@@ -19,8 +19,8 @@ export function DisplayPage() {
     getRoomByCode(code).then(async (r) => {
       if (!r) return;
       setRoom(r);
-      setStudents(await getStudents(r.id));
-      setAllPraises((await getPraises(r.id)).filter((p) => !p.deleted));
+      setStudents(await getStudents(code));
+      setAllPraises((await getPraises(code)).filter((p) => !p.deleted));
     });
   }, [code]);
 
@@ -31,7 +31,7 @@ export function DisplayPage() {
       setPraises([]);
       return;
     }
-    getPraisesForStudent(room.id, currentStudent.id).then(setPraises);
+    getPraisesForStudent(code!, currentStudent.id).then(setPraises);
   }, [room, currentStudent]);
 
   useEffect(() => {

@@ -17,7 +17,7 @@ export function StudentHomePage() {
     getRoomByCode(code).then(async (r) => {
       setRoom(r);
       if (r) {
-        const count = await getWrittenCount(r.id, session.studentId);
+        const count = await getWrittenCount(code, session.studentId);
         setWrittenCount(count);
       }
     });
@@ -25,8 +25,8 @@ export function StudentHomePage() {
 
   useEffect(() => {
     if (!room || !session || !code) return;
-    return subscribeToRoom(room.id, async () => {
-      const count = await getWrittenCount(room.id, session.studentId);
+    return subscribeToRoom(code, async () => {
+      const count = await getWrittenCount(code, session.studentId);
       setWrittenCount(count);
       getRoomByCode(code).then(setRoom);
     });

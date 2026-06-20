@@ -53,7 +53,7 @@ export function WritePage() {
     getRoomByCode(code).then(async (r) => {
       if (!r) return;
       setRoom(r);
-      const [s, p] = await Promise.all([getStudents(r.id), getPraises(r.id)]);
+      const [s, p] = await Promise.all([getStudents(code), getPraises(code)]);
       setStudents(s);
       setExistingPraises(p.filter((x) => !x.deleted));
     });
@@ -103,7 +103,7 @@ export function WritePage() {
     setLoading(true);
     try {
       if (editingPraiseId) {
-        await updatePraise(editingPraiseId, content, color);
+        await updatePraise(editingPraiseId, content, color, room.id);
         setToast('칭찬을 수정했어요!');
       } else {
         await createPraise(room.id, session.studentId, toStudentId, content, color);
@@ -113,7 +113,7 @@ export function WritePage() {
       setContent('');
       setToStudentId('');
       setEditingPraiseId(null);
-      const p = await getPraises(room.id);
+      const p = await getPraises(code);
       setExistingPraises(p.filter((x) => !x.deleted));
     } catch (err) {
       setError(err instanceof Error ? err.message : '작성에 실패했어요');

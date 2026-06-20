@@ -1,60 +1,63 @@
-import { getSupabase } from './supabase';
 import type { Praise, Room, Student, StudentStats } from '../types';
-import { generateHostToken, generateRoomCode, isRoomExpired } from './utils';
-import { ROOM_EXPIRY_HOURS } from './constants';
 import { getDeviceId } from './storage';
 
-export async function createRoom(className: string, studentNames: string[]) {
-  let code = generateRoomCode();
-  let attempts = 0;
+const API = '/api/rooms';
 
-  while (attempts < 10) {
-    const { data: existing } = await getSupabase().from('rp_rooms').select('id').eq('code', code).maybeSingle();
-    if (!existing) break;
-    code = generateRoomCode();
-    attempts++;
+async function api<T>(
+  action: string,
+  options: { method?: string; body?: Record<string, unknown>; code?: string } = {},
+): Promise<T> {
+  const { method = 'GET', body, code } = options;
+  const params = new URLSearchParams({ action });
+  if (code) params.set('code', code);
+  const url = `${API}?${params}`;
+
+  const res = await fetch(url, {
+    method,
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify({ action, ...body }) : undefined,
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error((data as { error?: string }).error ?? '요청에 실패했어요');
   }
+  return data as T;
+}
 
-  const hostToken = generateHostToken();
-  const expiresAt = new Date(Date.now() + ROOM_EXPIRY_HOURS * 60 * 60 * 1000).toISOString();
+async function getBundle(code: string) {
+  return api<{ room: Room; students: Student[]; praises: Praise[] }>('get', { code });
+}
 
-  const { data: room, error } = await getSupabase()
-    .from('rp_rooms')
-    .insert({ code, class_name: className, host_token: hostToken, expires_at: expiresAt })
-    .select()
-    .single();
+function attachStudentNames(praises: Praise[], students: Student[]): Praise[] {
+  const map = new Map(students.map((s) => [s.id, s]));
+  return praises.map((p) => ({
+    ...p,
+    from_student: map.get(p.from_student_id),
+    to_student: map.get(p.to_student_id),
+  }));
+}
 
-  if (error || !room) throw new Error(error?.message ?? '학급 생성에 실패했어요');
-
-  const students = studentNames.map((name) => ({ room_id: room.id, name }));
-  const { error: studentError } = await getSupabase().from('rp_students').insert(students);
-  if (studentError) throw new Error(studentError.message);
-
-  return room as Room;
+export async function createRoom(className: string, studentNames: string[]) {
+  const { room } = await api<{ room: Room; students: Student[] }>('create', {
+    method: 'POST',
+    body: { className, studentNames },
+  });
+  return room;
 }
 
 export async function getRoomByCode(code: string): Promise<Room | null> {
-  const { data, error } = await getSupabase()
-    .from('rp_rooms')
-    .select('*')
-    .eq('code', code.toUpperCase())
-    .maybeSingle();
-
-  if (error) throw new Error(error.message);
-  if (!data) return null;
-  if (isRoomExpired(data.expires_at)) return null;
-  return data as Room;
+  try {
+    const { room } = await getBundle(code);
+    return room;
+  } catch {
+    return null;
+  }
 }
 
-export async function getStudents(roomId: string): Promise<Student[]> {
-  const { data, error } = await getSupabase()
-    .from('rp_students')
-    .select('*')
-    .eq('room_id', roomId)
-    .order('name');
-
-  if (error) throw new Error(error.message);
-  return (data ?? []) as Student[];
+export async function getStudents(code: string): Promise<Student[]> {
+  const { students } = await getBundle(code);
+  return students;
 }
 
 export async function claimStudentName(
@@ -62,63 +65,32 @@ export async function claimStudentName(
   studentId: string,
   deviceId: string,
 ): Promise<{ ok: true } | { ok: false; reason: 'taken' }> {
-  const { data: student } = await getSupabase()
-    .from('rp_students')
-    .select('*')
-    .eq('id', studentId)
-    .eq('room_id', roomId)
-    .maybeSingle();
-
-  if (!student) throw new Error('학생을 찾을 수 없어요');
-
-  if (student.device_id && student.device_id !== deviceId) {
-    return { ok: false, reason: 'taken' };
-  }
-
-  if (!student.device_id) {
-    const { error } = await getSupabase()
-      .from('rp_students')
-      .update({ device_id: deviceId })
-      .eq('id', studentId)
-      .is('device_id', null);
-
-    if (error) {
-      const { data: refreshed } = await getSupabase().from('rp_students').select('device_id').eq('id', studentId).single();
-      if (refreshed?.device_id && refreshed.device_id !== deviceId) {
-        return { ok: false, reason: 'taken' };
-      }
+  try {
+    await api('claim', { method: 'POST', body: { roomId, studentId, deviceId } });
+    return { ok: true };
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('사용 중')) {
+      return { ok: false, reason: 'taken' };
     }
+    throw err;
   }
-
-  return { ok: true };
 }
 
 export async function updateRoomStatus(roomId: string, hostToken: string, status: Room['status']) {
-  const { data, error } = await getSupabase()
-    .from('rp_rooms')
-    .update({ status })
-    .eq('id', roomId)
-    .eq('host_token', hostToken)
-    .select()
-    .single();
-
-  if (error || !data) throw new Error('상태 변경 권한이 없어요');
-  return data as Room;
+  const { room } = await api<{ room: Room }>('status', {
+    method: 'PATCH',
+    body: { roomId, hostToken, status },
+  });
+  return room;
 }
 
-export async function getPraises(roomId: string): Promise<Praise[]> {
-  const { data, error } = await getSupabase()
-    .from('rp_praises')
-    .select('*, from_student:rp_students!from_student_id(*), to_student:rp_students!to_student_id(*)')
-    .eq('room_id', roomId)
-    .order('created_at', { ascending: true });
-
-  if (error) throw new Error(error.message);
-  return (data ?? []) as Praise[];
+export async function getPraises(code: string): Promise<Praise[]> {
+  const { praises, students } = await getBundle(code);
+  return attachStudentNames(praises, students);
 }
 
-export async function getPraisesForStudent(roomId: string, studentId: string): Promise<Praise[]> {
-  const all = await getPraises(roomId);
+export async function getPraisesForStudent(code: string, studentId: string): Promise<Praise[]> {
+  const all = await getPraises(code);
   return all.filter((p) => p.to_student_id === studentId && !p.deleted);
 }
 
@@ -129,50 +101,31 @@ export async function createPraise(
   content: string,
   color: string,
 ) {
-  const { data, error } = await getSupabase()
-    .from('rp_praises')
-    .insert({
-      room_id: roomId,
-      from_student_id: fromStudentId,
-      to_student_id: toStudentId,
-      content,
-      color,
-    })
-    .select()
-    .single();
-
-  if (error) {
-    if (error.code === '23505') throw new Error('이미 이 친구에게 칭찬을 썼어요');
-    throw new Error(error.message);
-  }
-  return data as Praise;
+  const { praise } = await api<{ praise: Praise }>('praise-create', {
+    method: 'POST',
+    body: { roomId, fromStudentId, toStudentId, content, color },
+  });
+  return praise;
 }
 
-export async function updatePraise(praiseId: string, content: string, color: string) {
-  const { data, error } = await getSupabase()
-    .from('rp_praises')
-    .update({ content, color, updated_at: new Date().toISOString() })
-    .eq('id', praiseId)
-    .select()
-    .single();
-
-  if (error) throw new Error(error.message);
-  return data as Praise;
+export async function updatePraise(praiseId: string, content: string, color: string, roomId: string) {
+  const { praise } = await api<{ praise: Praise }>('praise-update', {
+    method: 'PATCH',
+    body: { roomId, praiseId, content, color },
+  });
+  return praise;
 }
 
 export async function deletePraise(praiseId: string, hostToken: string, roomId: string) {
-  const { data: room } = await getSupabase().from('rp_rooms').select('host_token').eq('id', roomId).single();
-  if (!room || room.host_token !== hostToken) throw new Error('삭제 권한이 없어요');
-
-  const { error } = await getSupabase().from('rp_praises').update({ deleted: true }).eq('id', praiseId);
-  if (error) throw new Error(error.message);
+  await api('praise-delete', {
+    method: 'POST',
+    body: { roomId, praiseId, hostToken },
+  });
 }
 
-export async function getStudentStats(roomId: string): Promise<StudentStats[]> {
-  const students = await getStudents(roomId);
-  const praises = await getPraises(roomId);
+export async function getStudentStats(code: string): Promise<StudentStats[]> {
+  const { students, praises } = await getBundle(code);
   const active = praises.filter((p) => !p.deleted);
-
   return students.map((student) => ({
     student,
     writtenCount: active.filter((p) => p.from_student_id === student.id).length,
@@ -180,32 +133,14 @@ export async function getStudentStats(roomId: string): Promise<StudentStats[]> {
   }));
 }
 
-export async function getWrittenCount(roomId: string, studentId: string): Promise<number> {
-  const { count, error } = await getSupabase()
-    .from('rp_praises')
-    .select('*', { count: 'exact', head: true })
-    .eq('room_id', roomId)
-    .eq('from_student_id', studentId)
-    .eq('deleted', false);
-
-  if (error) throw new Error(error.message);
-  return count ?? 0;
+export async function getWrittenCount(code: string, studentId: string): Promise<number> {
+  const { praises } = await getBundle(code);
+  return praises.filter((p) => p.from_student_id === studentId && !p.deleted).length;
 }
 
-export function subscribeToRoom(
-  roomId: string,
-  onChange: () => void,
-): () => void {
-  const channel = getSupabase()
-    .channel(`room-${roomId}`)
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'rp_praises', filter: `room_id=eq.${roomId}` }, onChange)
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'rp_rooms', filter: `id=eq.${roomId}` }, onChange)
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'rp_students', filter: `room_id=eq.${roomId}` }, onChange)
-    .subscribe();
-
-  return () => {
-    getSupabase().removeChannel(channel);
-  };
+export function subscribeToRoom(_code: string, onChange: () => void): () => void {
+  const interval = setInterval(onChange, 3000);
+  return () => clearInterval(interval);
 }
 
 export { getDeviceId };
