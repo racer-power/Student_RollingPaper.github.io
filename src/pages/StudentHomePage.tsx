@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, Navigate, useParams } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { StatusBadge, StudentNav } from '../components/ui';
-import { getRoomByCode, getWrittenCount, subscribeToRoom } from '../lib/room';
+import { refreshRoomData, subscribeToRoom } from '../lib/room';
 import { getStudentSession } from '../lib/storage';
 import type { Room } from '../types';
 
@@ -14,23 +14,19 @@ export function StudentHomePage() {
 
   useEffect(() => {
     if (!code || !session) return;
-    getRoomByCode(code).then(async (r) => {
-      setRoom(r);
-      if (r) {
-        const count = await getWrittenCount(code, session.studentId);
-        setWrittenCount(count);
-      }
-    });
-  }, [code, session]);
 
-  useEffect(() => {
-    if (!room || !session || !code) return;
-    return subscribeToRoom(code, async () => {
-      const count = await getWrittenCount(code, session.studentId);
-      setWrittenCount(count);
-      getRoomByCode(code).then(setRoom);
-    });
-  }, [room?.id, code, session]);
+    async function refresh() {
+      const data = await refreshRoomData(code!);
+      if (!data) return;
+      setRoom(data.room);
+      setWrittenCount(
+        data.praises.filter((p) => p.from_student_id === session!.studentId && !p.deleted).length,
+      );
+    }
+
+    refresh();
+    return subscribeToRoom(code, refresh);
+  }, [code, session]);
 
   if (!code) return <Navigate to="/join" />;
   if (!session) return <Navigate to={`/join/${code}/select`} />;

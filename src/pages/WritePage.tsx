@@ -7,8 +7,7 @@ import { CARD_COLORS } from '../lib/constants';
 import {
   createPraise,
   getPraises,
-  getRoomByCode,
-  getStudents,
+  refreshRoomData,
   subscribeToRoom,
   updatePraise,
 } from '../lib/room';
@@ -44,12 +43,11 @@ export function WritePage() {
     if (!code || !session) return;
 
     async function refresh(shouldLoadDraft = false) {
-      const r = await getRoomByCode(code!);
-      if (!r) return;
-      setRoom(r);
-      const [s, p] = await Promise.all([getStudents(code!), getPraises(code!)]);
-      setStudents(s);
-      setExistingPraises(p.filter((x) => !x.deleted));
+      const data = await refreshRoomData(code!);
+      if (!data) return;
+      setRoom(data.room);
+      setStudents(data.students);
+      setExistingPraises(data.praises.filter((x) => !x.deleted));
 
       if (shouldLoadDraft && !draftLoadedRef.current) {
         draftLoadedRef.current = true;

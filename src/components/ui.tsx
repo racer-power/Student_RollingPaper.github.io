@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 export function Toast({ message, onClose }: { message: string; onClose: () => void }) {
@@ -28,13 +28,26 @@ export function StudentNav({ code }: { code: string }) {
   );
 }
 
+const STATUS_RANK: Record<string, number> = { ready: 0, active: 1, ended: 2 };
+
 export function useRoomGuard(status: string | undefined, allowEnded = false) {
   const [blocked, setBlocked] = useState<string | null>(null);
+  const peakStatus = useRef(0);
 
   useEffect(() => {
-    if (status === 'ready') setBlocked('아직 활동이 시작되지 않았어요. 선생님께 시작을 요청하세요.');
-    else if (status === 'ended' && !allowEnded) setBlocked('활동이 끝났어요. 받은 칭찬을 확인해 보세요.');
-    else setBlocked(null);
+    if (status && status in STATUS_RANK) {
+      peakStatus.current = Math.max(peakStatus.current, STATUS_RANK[status]);
+    }
+
+    const showReadyBlock = status === 'ready' && peakStatus.current < STATUS_RANK.active;
+
+    if (showReadyBlock) {
+      setBlocked('아직 활동이 시작되지 않았어요. 선생님께 시작을 요청하세요.');
+    } else if (status === 'ended' && !allowEnded) {
+      setBlocked('활동이 끝났어요. 받은 칭찬을 확인해 보세요.');
+    } else {
+      setBlocked(null);
+    }
   }, [status, allowEnded]);
 
   return blocked;

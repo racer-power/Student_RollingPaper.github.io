@@ -38,6 +38,31 @@ function isHost(bundle: RoomBundle, code: string): boolean {
   return !!token && bundle.room.host_token === token;
 }
 
+const STATUS_RANK: Record<Room['status'], number> = { ready: 0, active: 1, ended: 2 };
+
+function pickRoomStatus(a: Room['status'], b: Room['status']): Room['status'] {
+  return STATUS_RANK[a] >= STATUS_RANK[b] ? a : b;
+}
+
+/** Prevent stale server responses from downgrading ready → active flicker. */
+function mergeApiBundle(code: string, incoming: RoomBundle): RoomBundle {
+  const cached = loadRoomBundle(code);
+  if (!cached) return incoming;
+  return {
+    ...incoming,
+    room: {
+      ...incoming.room,
+      status: pickRoomStatus(cached.room.status, incoming.room.status),
+    },
+  };
+}
+
+function saveApiBundle(code: string, bundle: RoomBundle) {
+  saveRoomBundle(code, mergeApiBundle(code, bundle));
+}
+
+const inflightBundles = new Map<string, Promise<RoomBundle>>();
+
 export async function syncRoomToServer(code: string): Promise<void> {
   const bundle = loadRoomBundle(code);
   const hostToken = getHostToken(code);
@@ -54,7 +79,7 @@ export async function syncRoomToServer(code: string): Promise<void> {
   });
 }
 
-async function fetchBundle(code: string): Promise<RoomBundle> {
+async function fetchBundleImpl(code: string): Promise<RoomBundle> {
   const cached = loadRoomBundle(code);
   if (cached && isHost(cached, code)) {
     await syncRoomToServer(code).catch(() => {});
@@ -62,11 +87,44 @@ async function fetchBundle(code: string): Promise<RoomBundle> {
 
   try {
     const bundle = await api<RoomBundle>('get', { code });
-    saveRoomBundle(code, bundle);
-    return bundle;
+    saveApiBundle(code, bundle);
+    return loadRoomBundle(code) ?? bundle;
   } catch {
     if (cached) return cached;
     throw new Error('학급을 찾을 수 없어요.');
+  }
+}
+
+async function fetchBundle(code: string): Promise<RoomBundle> {
+  const key = code.toUpperCase();
+  const pending = inflightBundles.get(key);
+  if (pending) return pending;
+
+  const promise = fetchBundleImpl(code).finally(() => inflightBundles.delete(key));
+  inflightBundles.set(key, promise);
+  return promise;
+}
+
+export async function refreshRoomData(code: string): Promise<{
+  room: Room;
+  students: Student[];
+  praises: Praise[];
+} | null> {
+  try {
+    const bundle = await fetchBundle(code);
+    return {
+      room: bundle.room,
+      students: bundle.students,
+      praises: attachStudentNames(bundle.praises, bundle.students),
+    };
+  } catch {
+    const cached = loadRoomBundle(code);
+    if (!cached) return null;
+    return {
+      room: cached.room,
+      students: cached.students,
+      praises: attachStudentNames(cached.praises, cached.students),
+    };
   }
 }
 
@@ -127,15 +185,8 @@ export async function createRoom(className: string, studentNames: string[]) {
 }
 
 export async function getRoomByCode(code: string): Promise<Room | null> {
-  const cached = loadRoomBundle(code);
-  if (cached && isHost(cached, code)) {
-    await syncRoomToServer(code).catch(() => {});
-  }
-
   try {
-    const bundle = await api<RoomBundle>('get', { code });
-    saveRoomBundle(code, bundle);
-    return bundle.room;
+    return (await fetchBundle(code)).room;
   } catch {
     return loadRoomBundle(code)?.room ?? null;
   }
@@ -198,10 +249,11 @@ export async function updateRoomStatus(
       method: 'PATCH',
       body: { roomId, hostToken, status },
     });
-    bundle.room = room;
+    bundle.room = { ...room, status: pickRoomStatus(bundle.room.status, room.status) };
     saveRoomBundle(code, bundle);
-    return room;
+    return bundle.room;
   } catch {
+    await syncRoomToServer(code).catch(() => {});
     return bundle.room;
   }
 }
