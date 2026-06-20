@@ -26,12 +26,18 @@ npm run dev:vercel   # API 포함 전체 (Vercel CLI 필요)
 
 ### 403 Forbidden이 뜰 때
 
-Vercel **Deployment Protection**(배포 보호)이 켜져 있으면 학생·교사 모두 접속할 수 없습니다.
+**① 프리뷰 URL로 접속한 경우 (가장 흔함)**
+
+- ✅ 학생·교사 모두 이 주소 사용: **https://student-rolling-paper-github-io.vercel.app/**
+- ❌ `…-git-main-…vercel.app` 같은 **프리뷰 주소** → Deployment Protection 때문에 403
+
+교사는 **프로덕션 주소**에서 학급을 만들고, QR/코드를 학생에게 공유하세요.
+
+**② Deployment Protection이 켜진 경우**
 
 1. [Vercel 대시보드](https://vercel.com/dashboard) → 해당 프로젝트
 2. **Settings** → **Deployment Protection**
 3. **Vercel Authentication** 끄기 (또는 **Only Preview Deployments**로 변경)
-4. **Production** 배포 URL이 공개 접속 가능한지 확인
 
 교실용 앱은 **누구나 접속 가능**해야 합니다.
 

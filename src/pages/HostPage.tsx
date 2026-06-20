@@ -11,6 +11,7 @@ import {
   subscribeToRoom,
   updateRoomStatus,
 } from '../lib/room';
+import { getPublicJoinOrigin } from '../lib/constants';
 import { getHostToken } from '../lib/storage';
 import type { Praise, Room, StudentStats } from '../types';
 
@@ -23,7 +24,9 @@ export function HostPage() {
   const [loading, setLoading] = useState(true);
 
   const hostToken = code ? getHostToken(code) : null;
-  const joinUrl = `${window.location.origin}/join/${code}`;
+  const joinOrigin = getPublicJoinOrigin();
+  const joinUrl = `${joinOrigin}/join/${code}`;
+  const onPreviewHost = window.location.origin !== joinOrigin;
 
   async function load() {
     if (!code) return;
@@ -85,6 +88,13 @@ export function HostPage() {
         <StatusBadge status={room.status} />
         <RoomCodeDisplay code={room.code} joinUrl={joinUrl} />
       </div>
+
+      {onPreviewHost && (
+        <p className="notice">
+          학생 QR·링크는 공개 주소(<strong>{joinOrigin}</strong>)로 연결됩니다.
+          지금 보고 있는 주소는 학생 태블릿에서 403이 날 수 있어요.
+        </p>
+      )}
 
       {error && <p className="form-error">{error}</p>}
 
