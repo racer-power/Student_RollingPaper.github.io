@@ -57,10 +57,18 @@ export function loadDraft(code: string, studentId: string): PraiseDraft | null {
 }
 
 export function clearDraft(code: string, studentId: string) {
+  cancelDraftSave();
   localStorage.removeItem(draftKey(code, studentId));
 }
 
 let draftTimer: ReturnType<typeof setTimeout> | null = null;
+
+export function cancelDraftSave() {
+  if (draftTimer) {
+    clearTimeout(draftTimer);
+    draftTimer = null;
+  }
+}
 
 export function debouncedSaveDraft(
   code: string,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Navigate, useParams } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { ColorPicker } from '../components/ColorPicker';
@@ -36,33 +36,34 @@ export function WritePage() {
   const [toast, setToast] = useState('');
   const [draftSaved, setDraftSaved] = useState(false);
   const [editingPraiseId, setEditingPraiseId] = useState<string | null>(null);
+  const draftLoadedRef = useRef(false);
 
   const blocked = useRoomGuard(room?.status);
 
   useEffect(() => {
-    if (!code || !session || !room) return;
-    const draft = loadDraft(code, session.studentId);
-    if (draft) {
-      setToStudentId(draft.toStudentId);
-      setContent(draft.content);
-      setColor(draft.color);
-    }
-  }, [code, session, room]);
-
-  useEffect(() => {
     if (!code || !session) return;
 
-    async function refresh() {
+    async function refresh(shouldLoadDraft = false) {
       const r = await getRoomByCode(code!);
       if (!r) return;
       setRoom(r);
       const [s, p] = await Promise.all([getStudents(code!), getPraises(code!)]);
       setStudents(s);
       setExistingPraises(p.filter((x) => !x.deleted));
+
+      if (shouldLoadDraft && !draftLoadedRef.current) {
+        draftLoadedRef.current = true;
+        const draft = loadDraft(code!, session!.studentId);
+        if (draft) {
+          setToStudentId(draft.toStudentId);
+          setContent(draft.content);
+          setColor(draft.color);
+        }
+      }
     }
 
-    refresh();
-    return subscribeToRoom(code, refresh);
+    refresh(true);
+    return subscribeToRoom(code, () => refresh(false));
   }, [code, session]);
 
   const saveDraftNow = useCallback(() => {
@@ -75,6 +76,18 @@ export function WritePage() {
   useEffect(() => {
     saveDraftNow();
   }, [saveDraftNow]);
+
+  useEffect(() => {
+    if (!session || !toStudentId || editingPraiseId) return;
+    const written = new Set(
+      existingPraises.filter((p) => p.from_student_id === session.studentId).map((p) => p.to_student_id),
+    );
+    if (written.has(toStudentId)) {
+      setToStudentId('');
+      setContent('');
+      setDraftSaved(false);
+    }
+  }, [toStudentId, editingPraiseId, existingPraises, session]);
 
   if (!code) return <Navigate to="/join" />;
   if (!session) return <Navigate to={`/join/${code}/select`} />;
@@ -119,6 +132,7 @@ export function WritePage() {
       setContent('');
       setToStudentId('');
       setEditingPraiseId(null);
+      setDraftSaved(false);
       const p = await getPraises(code);
       setExistingPraises(p.filter((x) => !x.deleted));
     } catch (err) {
