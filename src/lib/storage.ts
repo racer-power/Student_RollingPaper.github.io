@@ -1,4 +1,4 @@
-import type { PraiseDraft } from '../types';
+import type { PraiseDraft, RoomBundle } from '../types';
 import { DRAFT_DEBOUNCE_MS } from './constants';
 
 const DEVICE_KEY = 'rp_device_id';
@@ -73,4 +73,33 @@ export function debouncedSaveDraft(
     saveDraft(code, studentId, { ...draft, savedAt: Date.now() });
     onSaved?.();
   }, DRAFT_DEBOUNCE_MS);
+}
+
+function bundleKey(code: string) {
+  return `rp_bundle_${code.toUpperCase()}`;
+}
+
+export function saveRoomBundle(code: string, bundle: RoomBundle) {
+  localStorage.setItem(bundleKey(code), JSON.stringify(bundle));
+}
+
+export function loadRoomBundle(code: string): RoomBundle | null {
+  const raw = localStorage.getItem(bundleKey(code));
+  if (!raw) return null;
+  try {
+    const bundle = JSON.parse(raw) as RoomBundle;
+    if (new Date(bundle.room.expires_at) < new Date()) {
+      localStorage.removeItem(bundleKey(code));
+      return null;
+    }
+    return bundle;
+  } catch {
+    return null;
+  }
+}
+
+export function updateRoomBundle(code: string, updater: (bundle: RoomBundle) => RoomBundle) {
+  const current = loadRoomBundle(code);
+  if (!current) return;
+  saveRoomBundle(code, updater(current));
 }

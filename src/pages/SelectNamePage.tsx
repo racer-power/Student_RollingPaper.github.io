@@ -35,7 +35,7 @@ export function SelectNamePage() {
     setError('');
 
     try {
-      const result = await claimStudentName(room.id, student.id, getDeviceId());
+      const result = await claimStudentName(room.id, student.id, getDeviceId(), code);
       if (!result.ok) {
         setError('이미 사용 중인 이름이에요. 다른 이름을 선택하거나 선생님께 말씀해 주세요.');
         return;

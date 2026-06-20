@@ -50,7 +50,7 @@ export function HostPage() {
       return;
     }
     try {
-      const updated = await updateRoomStatus(room.id, hostToken, status);
+      const updated = await updateRoomStatus(room.id, hostToken, status, code!);
       setRoom(updated);
     } catch (err) {
       setError(err instanceof Error ? err.message : '상태 변경 실패');
@@ -61,7 +61,7 @@ export function HostPage() {
     if (!room || !hostToken) return;
     if (!confirm('이 칭찬을 삭제할까요?')) return;
     try {
-      await deletePraise(praiseId, hostToken, room.id);
+      await deletePraise(praiseId, hostToken, room.id, code!);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : '삭제 실패');

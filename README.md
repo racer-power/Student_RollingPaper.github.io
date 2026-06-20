@@ -20,9 +20,13 @@ npm run dev:vercel   # API 포함 전체 (Vercel CLI 필요)
 
 ## 데이터 저장
 
-- Vercel Serverless API + **메모리 저장소** (24시간 유효)
-- 수업 중(약 30분~1시간) 학생 다기기 동시 접속 지원
-- 서버 재시작·콜드 스타트 시 데이터가 초기화될 수 있음 → **수업 후 PDF 저장 권장**
+- **브라우저 localStorage** — 학급 생성 직후 교사 대시보드 즉시 표시
+- **Vercel Edge API + 메모리/KV** — 학생 다기기 접속 (선택: Vercel Redis 연동)
+- 세션 **24시간** 유효 → 수업 후 **PDF 저장** 권장
+
+### 학생 태블릿에서 참여가 안 될 때
+
+Vercel 대시보드 → **Storage** → **Redis(Upstash)** 연동 후 재배포하면 여러 기기에서 학급 코드로 접속할 수 있습니다.
 
 ## 기능
 

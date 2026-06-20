@@ -103,10 +103,10 @@ export function WritePage() {
     setLoading(true);
     try {
       if (editingPraiseId) {
-        await updatePraise(editingPraiseId, content, color, room.id);
+        await updatePraise(editingPraiseId, content, color, room.id, code!);
         setToast('칭찬을 수정했어요!');
       } else {
-        await createPraise(room.id, session.studentId, toStudentId, content, color);
+        await createPraise(room.id, session.studentId, toStudentId, content, color, code!);
         setToast('칭찬이 전해졌어요!');
       }
       clearDraft(code, session.studentId);

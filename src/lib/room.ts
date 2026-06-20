@@ -1,5 +1,5 @@
-import type { Praise, Room, Student, StudentStats } from '../types';
-import { getDeviceId } from './storage';
+import type { Praise, Room, Student, StudentStats, RoomBundle } from '../types';
+import { getDeviceId, loadRoomBundle, saveRoomBundle } from './storage';
 
 const API = '/api/rooms';
 
@@ -25,8 +25,17 @@ async function api<T>(
   return data as T;
 }
 
-async function getBundle(code: string) {
-  return api<{ room: Room; students: Student[]; praises: Praise[] }>('get', { code });
+async function fetchBundle(code: string): Promise<RoomBundle> {
+  const cached = loadRoomBundle(code);
+  if (cached) {
+    api<RoomBundle>('get', { code })
+      .then((fresh) => saveRoomBundle(code, fresh))
+      .catch(() => {});
+    return cached;
+  }
+  const bundle = await api<RoomBundle>('get', { code });
+  saveRoomBundle(code, bundle);
+  return bundle;
 }
 
 function attachStudentNames(praises: Praise[], students: Student[]): Praise[] {
@@ -39,24 +48,32 @@ function attachStudentNames(praises: Praise[], students: Student[]): Praise[] {
 }
 
 export async function createRoom(className: string, studentNames: string[]) {
-  const { room } = await api<{ room: Room; students: Student[] }>('create', {
+  const data = await api<{ room: Room; students: Student[] }>('create', {
     method: 'POST',
     body: { className, studentNames },
   });
-  return room;
+  saveRoomBundle(data.room.code, {
+    room: data.room,
+    students: data.students,
+    praises: [],
+  });
+  return data.room;
 }
 
 export async function getRoomByCode(code: string): Promise<Room | null> {
+  const cached = loadRoomBundle(code);
+  if (cached) return cached.room;
   try {
-    const { room } = await getBundle(code);
-    return room;
+    const bundle = await api<RoomBundle>('get', { code });
+    saveRoomBundle(code, bundle);
+    return bundle.room;
   } catch {
     return null;
   }
 }
 
 export async function getStudents(code: string): Promise<Student[]> {
-  const { students } = await getBundle(code);
+  const { students } = await fetchBundle(code);
   return students;
 }
 
@@ -64,9 +81,16 @@ export async function claimStudentName(
   roomId: string,
   studentId: string,
   deviceId: string,
+  code: string,
 ): Promise<{ ok: true } | { ok: false; reason: 'taken' }> {
   try {
     await api('claim', { method: 'POST', body: { roomId, studentId, deviceId } });
+    const bundle = loadRoomBundle(code);
+    if (bundle) {
+      const student = bundle.students.find((s) => s.id === studentId);
+      if (student) student.device_id = deviceId;
+      saveRoomBundle(code, bundle);
+    }
     return { ok: true };
   } catch (err) {
     if (err instanceof Error && err.message.includes('사용 중')) {
@@ -76,16 +100,26 @@ export async function claimStudentName(
   }
 }
 
-export async function updateRoomStatus(roomId: string, hostToken: string, status: Room['status']) {
+export async function updateRoomStatus(
+  roomId: string,
+  hostToken: string,
+  status: Room['status'],
+  code: string,
+) {
   const { room } = await api<{ room: Room }>('status', {
     method: 'PATCH',
     body: { roomId, hostToken, status },
   });
+  const bundle = loadRoomBundle(code);
+  if (bundle) {
+    bundle.room = room;
+    saveRoomBundle(code, bundle);
+  }
   return room;
 }
 
 export async function getPraises(code: string): Promise<Praise[]> {
-  const { praises, students } = await getBundle(code);
+  const { praises, students } = await fetchBundle(code);
   return attachStudentNames(praises, students);
 }
 
@@ -100,31 +134,55 @@ export async function createPraise(
   toStudentId: string,
   content: string,
   color: string,
+  code: string,
 ) {
   const { praise } = await api<{ praise: Praise }>('praise-create', {
     method: 'POST',
     body: { roomId, fromStudentId, toStudentId, content, color },
   });
+  const bundle = loadRoomBundle(code);
+  if (bundle) {
+    bundle.praises.push(praise);
+    saveRoomBundle(code, bundle);
+  }
   return praise;
 }
 
-export async function updatePraise(praiseId: string, content: string, color: string, roomId: string) {
+export async function updatePraise(
+  praiseId: string,
+  content: string,
+  color: string,
+  roomId: string,
+  code: string,
+) {
   const { praise } = await api<{ praise: Praise }>('praise-update', {
     method: 'PATCH',
     body: { roomId, praiseId, content, color },
   });
+  const bundle = loadRoomBundle(code);
+  if (bundle) {
+    const idx = bundle.praises.findIndex((p) => p.id === praiseId);
+    if (idx >= 0) bundle.praises[idx] = praise;
+    saveRoomBundle(code, bundle);
+  }
   return praise;
 }
 
-export async function deletePraise(praiseId: string, hostToken: string, roomId: string) {
+export async function deletePraise(praiseId: string, hostToken: string, roomId: string, code: string) {
   await api('praise-delete', {
     method: 'POST',
     body: { roomId, praiseId, hostToken },
   });
+  const bundle = loadRoomBundle(code);
+  if (bundle) {
+    const praise = bundle.praises.find((p) => p.id === praiseId);
+    if (praise) praise.deleted = true;
+    saveRoomBundle(code, bundle);
+  }
 }
 
 export async function getStudentStats(code: string): Promise<StudentStats[]> {
-  const { students, praises } = await getBundle(code);
+  const { students, praises } = await fetchBundle(code);
   const active = praises.filter((p) => !p.deleted);
   return students.map((student) => ({
     student,
@@ -134,13 +192,20 @@ export async function getStudentStats(code: string): Promise<StudentStats[]> {
 }
 
 export async function getWrittenCount(code: string, studentId: string): Promise<number> {
-  const { praises } = await getBundle(code);
+  const { praises } = await fetchBundle(code);
   return praises.filter((p) => p.from_student_id === studentId && !p.deleted).length;
 }
 
 export function subscribeToRoom(_code: string, onChange: () => void): () => void {
   const interval = setInterval(onChange, 3000);
-  return () => clearInterval(interval);
+  const onStorage = (e: StorageEvent) => {
+    if (e.key?.startsWith('rp_bundle_')) onChange();
+  };
+  window.addEventListener('storage', onStorage);
+  return () => {
+    clearInterval(interval);
+    window.removeEventListener('storage', onStorage);
+  };
 }
 
 export { getDeviceId };

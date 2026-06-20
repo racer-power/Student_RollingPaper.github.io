@@ -44,3 +44,9 @@ export interface StudentStats {
   writtenCount: number;
   receivedCount: number;
 }
+
+export interface RoomBundle {
+  room: Room;
+  students: Student[];
+  praises: Praise[];
+}

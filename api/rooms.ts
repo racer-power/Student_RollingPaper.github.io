@@ -1,5 +1,7 @@
 export const config = { runtime: 'edge' };
 
+import { kv } from '@vercel/kv';
+
 type RoomStatus = 'ready' | 'active' | 'ended';
 
 interface Room {
@@ -106,6 +108,66 @@ function saveBundle(store: Map<string, RoomBundle>, code: string, bundle: RoomBu
   store.set(code.toUpperCase(), bundle);
 }
 
+async function persistBundle(code: string, bundle: RoomBundle) {
+  saveBundle(getStore(), code, bundle);
+  if (!process.env.KV_REST_API_URL) return;
+  try {
+    const upper = code.toUpperCase();
+    await kv.set(`room:${upper}`, bundle, { ex: ROOM_EXPIRY_HOURS * 3600 });
+    await kv.set(`roomid:${bundle.room.id}`, upper, { ex: ROOM_EXPIRY_HOURS * 3600 });
+  } catch {
+    /* KV optional */
+  }
+}
+
+async function loadBundle(code: string): Promise<RoomBundle | undefined> {
+  const upper = code.toUpperCase();
+  const cached = getByCode(getStore(), upper);
+  if (cached) return cached;
+
+  if (!process.env.KV_REST_API_URL) return undefined;
+  try {
+    const data = await kv.get<RoomBundle>(`room:${upper}`);
+    if (!data) return undefined;
+    if (new Date(data.room.expires_at) < new Date()) {
+      await kv.del(`room:${upper}`);
+      return undefined;
+    }
+    saveBundle(getStore(), upper, data);
+    return data;
+  } catch {
+    return undefined;
+  }
+}
+
+async function findBundleByRoomId(roomId: string): Promise<RoomBundle | undefined> {
+  const mem = [...getStore().values()].find((b) => b.room.id === roomId);
+  if (mem) return mem;
+
+  if (!process.env.KV_REST_API_URL) return undefined;
+  try {
+    const code = await kv.get<string>(`roomid:${roomId}`);
+    if (!code) return undefined;
+    return loadBundle(code);
+  } catch {
+    return undefined;
+  }
+}
+
+async function uniqueCodeAsync(): Promise<string> {
+  const store = getStore();
+  for (let i = 0; i < 20; i++) {
+    const code = generateRoomCode();
+    if (store.has(code)) continue;
+    if (process.env.KV_REST_API_URL) {
+      const existing = await kv.get(`room:${code}`);
+      if (existing) continue;
+    }
+    return code;
+  }
+  throw new Error('CODE_GENERATION_FAILED');
+}
+
 export default async function handler(req: Request) {
   if (req.method === 'OPTIONS') {
     return new Response(null, {
@@ -130,7 +192,6 @@ export default async function handler(req: Request) {
 
   const action = url.searchParams.get('action') ?? (body.action as string);
   const code = (url.searchParams.get('code') ?? (body.code as string) ?? '').toUpperCase();
-  const store = getStore();
 
   try {
     switch (action) {
@@ -143,7 +204,7 @@ export default async function handler(req: Request) {
           return error('학생 이름을 1명 이상 입력해 주세요.', 400);
         }
 
-        const roomCode = uniqueCode(store);
+        const roomCode = await uniqueCodeAsync();
         const roomId = newId();
         const hostToken = newId();
         const createdAt = nowIso();
@@ -168,14 +229,14 @@ export default async function handler(req: Request) {
         }));
 
         const bundle: RoomBundle = { room, students, praises: [] };
-        saveBundle(store, roomCode, bundle);
+        await persistBundle(roomCode, bundle);
         return json({ room, students }, 201);
       }
 
       case 'get': {
         if (req.method !== 'GET') return error('Method not allowed', 405);
         if (!code) return error('학급 코드가 필요합니다.', 400);
-        const bundle = getByCode(store, code);
+        const bundle = await loadBundle(code);
         if (!bundle) return error('학급을 찾을 수 없어요.', 404);
         return json(bundle);
       }
@@ -183,18 +244,18 @@ export default async function handler(req: Request) {
       case 'status': {
         if (req.method !== 'PATCH') return error('Method not allowed', 405);
         const { roomId, hostToken, status } = body;
-        const bundle = [...store.values()].find((b) => b.room.id === roomId);
+        const bundle = await findBundleByRoomId(String(roomId));
         if (!bundle) return error('학급을 찾을 수 없어요.', 404);
         if (bundle.room.host_token !== hostToken) return error('권한이 없어요.', 403);
         bundle.room.status = status as RoomStatus;
-        saveBundle(store, bundle.room.code, bundle);
+        await persistBundle(bundle.room.code, bundle);
         return json({ room: bundle.room });
       }
 
       case 'claim': {
         if (req.method !== 'POST') return error('Method not allowed', 405);
         const { roomId, studentId, deviceId } = body;
-        const bundle = [...store.values()].find((b) => b.room.id === roomId);
+        const bundle = await findBundleByRoomId(String(roomId));
         if (!bundle) return error('학급을 찾을 수 없어요.', 404);
         const student = bundle.students.find((s) => s.id === studentId);
         if (!student) return error('학생을 찾을 수 없어요.', 404);
@@ -202,14 +263,14 @@ export default async function handler(req: Request) {
           return error('이미 사용 중인 이름이에요.', 409);
         }
         if (!student.device_id) student.device_id = String(deviceId);
-        saveBundle(store, bundle.room.code, bundle);
+        await persistBundle(bundle.room.code, bundle);
         return json({ ok: true });
       }
 
       case 'praise-create': {
         if (req.method !== 'POST') return error('Method not allowed', 405);
         const { roomId, fromStudentId, toStudentId, content, color } = body;
-        const bundle = [...store.values()].find((b) => b.room.id === roomId);
+        const bundle = await findBundleByRoomId(String(roomId));
         if (!bundle) return error('학급을 찾을 수 없어요.', 404);
         if (bundle.room.status === 'ended') return error('활동이 끝났어요.', 403);
         if (bundle.room.status === 'ready') return error('아직 활동이 시작되지 않았어요.', 403);
@@ -235,14 +296,14 @@ export default async function handler(req: Request) {
           updated_at: nowIso(),
         };
         bundle.praises.push(praise);
-        saveBundle(store, bundle.room.code, bundle);
+        await persistBundle(bundle.room.code, bundle);
         return json({ praise }, 201);
       }
 
       case 'praise-update': {
         if (req.method !== 'PATCH') return error('Method not allowed', 405);
         const { roomId, praiseId, content, color } = body;
-        const bundle = [...store.values()].find((b) => b.room.id === roomId);
+        const bundle = await findBundleByRoomId(String(roomId));
         if (!bundle) return error('학급을 찾을 수 없어요.', 404);
         if (bundle.room.status === 'ended') return error('활동이 끝났어요.', 403);
         const praise = bundle.praises.find((p) => p.id === praiseId);
@@ -252,20 +313,20 @@ export default async function handler(req: Request) {
         praise.content = String(content);
         praise.color = String(color);
         praise.updated_at = nowIso();
-        saveBundle(store, bundle.room.code, bundle);
+        await persistBundle(bundle.room.code, bundle);
         return json({ praise });
       }
 
       case 'praise-delete': {
         if (req.method !== 'POST' && req.method !== 'DELETE') return error('Method not allowed', 405);
         const { roomId, praiseId, hostToken } = body;
-        const bundle = [...store.values()].find((b) => b.room.id === roomId);
+        const bundle = await findBundleByRoomId(String(roomId));
         if (!bundle) return error('학급을 찾을 수 없어요.', 404);
         if (bundle.room.host_token !== hostToken) return error('권한이 없어요.', 403);
         const praise = bundle.praises.find((p) => p.id === praiseId);
         if (!praise) return error('칭찬을 찾을 수 없어요.', 404);
         praise.deleted = true;
-        saveBundle(store, bundle.room.code, bundle);
+        await persistBundle(bundle.room.code, bundle);
         return json({ ok: true });
       }
 
