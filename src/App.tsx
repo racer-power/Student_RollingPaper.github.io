@@ -1,4 +1,6 @@
 import { BrowserRouter, Route, Routes } from 'react-router-dom';
+import { ConfigMissing } from './components/ConfigMissing';
+import { isSupabaseConfigured } from './lib/supabase';
 import { LandingPage } from './pages/LandingPage';
 import { CreatePage } from './pages/CreatePage';
 import { JoinPage } from './pages/JoinPage';
@@ -11,6 +13,10 @@ import { DisplayPage } from './pages/DisplayPage';
 import { ExportPage } from './pages/ExportPage';
 
 export default function App() {
+  if (!isSupabaseConfigured) {
+    return <ConfigMissing />;
+  }
+
   return (
     <BrowserRouter>
       <Routes>

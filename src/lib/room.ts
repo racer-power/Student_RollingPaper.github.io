@@ -1,4 +1,4 @@
-import { supabase } from './supabase';
+import { getSupabase } from './supabase';
 import type { Praise, Room, Student, StudentStats } from '../types';
 import { generateHostToken, generateRoomCode, isRoomExpired } from './utils';
 import { ROOM_EXPIRY_HOURS } from './constants';
@@ -9,7 +9,7 @@ export async function createRoom(className: string, studentNames: string[]) {
   let attempts = 0;
 
   while (attempts < 10) {
-    const { data: existing } = await supabase.from('rp_rooms').select('id').eq('code', code).maybeSingle();
+    const { data: existing } = await getSupabase().from('rp_rooms').select('id').eq('code', code).maybeSingle();
     if (!existing) break;
     code = generateRoomCode();
     attempts++;
@@ -18,7 +18,7 @@ export async function createRoom(className: string, studentNames: string[]) {
   const hostToken = generateHostToken();
   const expiresAt = new Date(Date.now() + ROOM_EXPIRY_HOURS * 60 * 60 * 1000).toISOString();
 
-  const { data: room, error } = await supabase
+  const { data: room, error } = await getSupabase()
     .from('rp_rooms')
     .insert({ code, class_name: className, host_token: hostToken, expires_at: expiresAt })
     .select()
@@ -27,14 +27,14 @@ export async function createRoom(className: string, studentNames: string[]) {
   if (error || !room) throw new Error(error?.message ?? '학급 생성에 실패했어요');
 
   const students = studentNames.map((name) => ({ room_id: room.id, name }));
-  const { error: studentError } = await supabase.from('rp_students').insert(students);
+  const { error: studentError } = await getSupabase().from('rp_students').insert(students);
   if (studentError) throw new Error(studentError.message);
 
   return room as Room;
 }
 
 export async function getRoomByCode(code: string): Promise<Room | null> {
-  const { data, error } = await supabase
+  const { data, error } = await getSupabase()
     .from('rp_rooms')
     .select('*')
     .eq('code', code.toUpperCase())
@@ -47,7 +47,7 @@ export async function getRoomByCode(code: string): Promise<Room | null> {
 }
 
 export async function getStudents(roomId: string): Promise<Student[]> {
-  const { data, error } = await supabase
+  const { data, error } = await getSupabase()
     .from('rp_students')
     .select('*')
     .eq('room_id', roomId)
@@ -62,7 +62,7 @@ export async function claimStudentName(
   studentId: string,
   deviceId: string,
 ): Promise<{ ok: true } | { ok: false; reason: 'taken' }> {
-  const { data: student } = await supabase
+  const { data: student } = await getSupabase()
     .from('rp_students')
     .select('*')
     .eq('id', studentId)
@@ -76,14 +76,14 @@ export async function claimStudentName(
   }
 
   if (!student.device_id) {
-    const { error } = await supabase
+    const { error } = await getSupabase()
       .from('rp_students')
       .update({ device_id: deviceId })
       .eq('id', studentId)
       .is('device_id', null);
 
     if (error) {
-      const { data: refreshed } = await supabase.from('rp_students').select('device_id').eq('id', studentId).single();
+      const { data: refreshed } = await getSupabase().from('rp_students').select('device_id').eq('id', studentId).single();
       if (refreshed?.device_id && refreshed.device_id !== deviceId) {
         return { ok: false, reason: 'taken' };
       }
@@ -94,7 +94,7 @@ export async function claimStudentName(
 }
 
 export async function updateRoomStatus(roomId: string, hostToken: string, status: Room['status']) {
-  const { data, error } = await supabase
+  const { data, error } = await getSupabase()
     .from('rp_rooms')
     .update({ status })
     .eq('id', roomId)
@@ -107,7 +107,7 @@ export async function updateRoomStatus(roomId: string, hostToken: string, status
 }
 
 export async function getPraises(roomId: string): Promise<Praise[]> {
-  const { data, error } = await supabase
+  const { data, error } = await getSupabase()
     .from('rp_praises')
     .select('*, from_student:rp_students!from_student_id(*), to_student:rp_students!to_student_id(*)')
     .eq('room_id', roomId)
@@ -129,7 +129,7 @@ export async function createPraise(
   content: string,
   color: string,
 ) {
-  const { data, error } = await supabase
+  const { data, error } = await getSupabase()
     .from('rp_praises')
     .insert({
       room_id: roomId,
@@ -149,7 +149,7 @@ export async function createPraise(
 }
 
 export async function updatePraise(praiseId: string, content: string, color: string) {
-  const { data, error } = await supabase
+  const { data, error } = await getSupabase()
     .from('rp_praises')
     .update({ content, color, updated_at: new Date().toISOString() })
     .eq('id', praiseId)
@@ -161,10 +161,10 @@ export async function updatePraise(praiseId: string, content: string, color: str
 }
 
 export async function deletePraise(praiseId: string, hostToken: string, roomId: string) {
-  const { data: room } = await supabase.from('rp_rooms').select('host_token').eq('id', roomId).single();
+  const { data: room } = await getSupabase().from('rp_rooms').select('host_token').eq('id', roomId).single();
   if (!room || room.host_token !== hostToken) throw new Error('삭제 권한이 없어요');
 
-  const { error } = await supabase.from('rp_praises').update({ deleted: true }).eq('id', praiseId);
+  const { error } = await getSupabase().from('rp_praises').update({ deleted: true }).eq('id', praiseId);
   if (error) throw new Error(error.message);
 }
 
@@ -181,7 +181,7 @@ export async function getStudentStats(roomId: string): Promise<StudentStats[]> {
 }
 
 export async function getWrittenCount(roomId: string, studentId: string): Promise<number> {
-  const { count, error } = await supabase
+  const { count, error } = await getSupabase()
     .from('rp_praises')
     .select('*', { count: 'exact', head: true })
     .eq('room_id', roomId)
@@ -196,7 +196,7 @@ export function subscribeToRoom(
   roomId: string,
   onChange: () => void,
 ): () => void {
-  const channel = supabase
+  const channel = getSupabase()
     .channel(`room-${roomId}`)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'rp_praises', filter: `room_id=eq.${roomId}` }, onChange)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'rp_rooms', filter: `id=eq.${roomId}` }, onChange)
@@ -204,7 +204,7 @@ export function subscribeToRoom(
     .subscribe();
 
   return () => {
-    supabase.removeChannel(channel);
+    getSupabase().removeChannel(channel);
   };
 }
 

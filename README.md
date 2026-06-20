@@ -23,6 +23,12 @@ npm run dev
 - Supabase (Realtime)
 - jsPDF + html2canvas + JSZip (내보내기)
 
-## 문서
+## Vercel 배포
 
-자세한 요구사항은 [PRD.md](./PRD.md)를 참고하세요.
+1. GitHub 저장소 연결 후 Vercel에서 Import
+2. **Environment Variables** (Production·Preview·Development 모두):
+   - `VITE_SUPABASE_URL` — Supabase 프로젝트 URL
+   - `VITE_SUPABASE_ANON_KEY` — Supabase anon key
+3. 환경 변수 추가 후 **Redeploy** (빌드 시점에 `VITE_*` 값이 번들에 포함됨)
+
+로컬 `.env` 값은 Git에 올리지 마세요. Vercel 대시보드에서만 설정합니다.
