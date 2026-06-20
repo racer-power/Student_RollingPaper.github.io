@@ -5,9 +5,7 @@ import { RoomCodeDisplay } from '../components/RoomCodeDisplay';
 import { StatusBadge } from '../components/ui';
 import {
   deletePraise,
-  getPraises,
-  getRoomByCode,
-  getStudentStats,
+  refreshRoomData,
   subscribeToRoom,
   updateRoomStatus,
 } from '../lib/room';
@@ -31,15 +29,21 @@ export function HostPage() {
   async function load() {
     if (!code) return;
     try {
-      const r = await getRoomByCode(code);
-      setRoom(r);
-      if (r) {
-        setStats(await getStudentStats(code));
-        setPraises(await getPraises(code));
-        setError('');
-      }
+      const data = await refreshRoomData(code);
+      if (!data) return;
+      setRoom(data.room);
+      const active = data.praises.filter((p) => !p.deleted);
+      setPraises(data.praises);
+      setStats(
+        data.students.map((student) => ({
+          student,
+          writtenCount: active.filter((p) => p.from_student_id === student.id).length,
+          receivedCount: active.filter((p) => p.to_student_id === student.id).length,
+        })),
+      );
+      setError('');
     } catch {
-      /* local cache still shown via getRoomByCode fallback */
+      /* local cache still shown via refreshRoomData fallback */
     }
   }
 

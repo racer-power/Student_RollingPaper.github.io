@@ -33,11 +33,6 @@ async function api<T>(
   return data as T;
 }
 
-function isHost(bundle: RoomBundle, code: string): boolean {
-  const token = getHostToken(code);
-  return !!token && bundle.room.host_token === token;
-}
-
 const STATUS_RANK: Record<Room['status'], number> = { ready: 0, active: 1, ended: 2 };
 
 function pickRoomStatus(a: Room['status'], b: Room['status']): Room['status'] {
@@ -45,16 +40,45 @@ function pickRoomStatus(a: Room['status'], b: Room['status']): Room['status'] {
 }
 
 /** Prevent stale server responses from downgrading ready → active flicker. */
-function mergeApiBundle(code: string, incoming: RoomBundle): RoomBundle {
-  const cached = loadRoomBundle(code);
-  if (!cached) return incoming;
+function mergePraises(a: Praise[], b: Praise[]): Praise[] {
+  const map = new Map<string, Praise>();
+  for (const p of [...a, ...b]) {
+    const prev = map.get(p.id);
+    if (!prev || new Date(p.updated_at) >= new Date(prev.updated_at)) {
+      map.set(p.id, p);
+    }
+  }
+  return Array.from(map.values());
+}
+
+function mergeStudents(a: Student[], b: Student[]): Student[] {
+  const map = new Map(b.map((s) => [s.id, { ...s }]));
+  for (const s of a) {
+    const existing = map.get(s.id);
+    if (existing) {
+      map.set(s.id, { ...existing, device_id: existing.device_id ?? s.device_id });
+    } else {
+      map.set(s.id, s);
+    }
+  }
+  return Array.from(map.values());
+}
+
+function mergeBundles(cached: RoomBundle, incoming: RoomBundle): RoomBundle {
   return {
-    ...incoming,
     room: {
       ...incoming.room,
       status: pickRoomStatus(cached.room.status, incoming.room.status),
     },
+    students: mergeStudents(cached.students, incoming.students),
+    praises: mergePraises(cached.praises, incoming.praises),
   };
+}
+
+function mergeApiBundle(code: string, incoming: RoomBundle): RoomBundle {
+  const cached = loadRoomBundle(code);
+  if (!cached) return incoming;
+  return mergeBundles(cached, incoming);
 }
 
 function saveApiBundle(code: string, bundle: RoomBundle) {
@@ -81,9 +105,6 @@ export async function syncRoomToServer(code: string): Promise<void> {
 
 async function fetchBundleImpl(code: string): Promise<RoomBundle> {
   const cached = loadRoomBundle(code);
-  if (cached && isHost(cached, code)) {
-    await syncRoomToServer(code).catch(() => {});
-  }
 
   try {
     const bundle = await api<RoomBundle>('get', { code });
@@ -216,7 +237,7 @@ export async function claimStudentName(
   }
 
   try {
-    await api('claim', { method: 'POST', body: { roomId, studentId, deviceId } });
+    await api('claim', { method: 'POST', body: { roomId, studentId, deviceId, code } });
     return { ok: true };
   } catch (err) {
     if (bundle && bundle.students.find((s) => s.id === studentId)?.device_id === deviceId) {
@@ -296,14 +317,16 @@ export async function createPraise(
   try {
     const { praise: saved } = await api<{ praise: Praise }>('praise-create', {
       method: 'POST',
-      body: { roomId, fromStudentId, toStudentId, content, color },
+      body: { roomId, fromStudentId, toStudentId, content, color, code },
     });
     const idx = bundle.praises.findIndex((p) => p.id === praise.id);
     if (idx >= 0) bundle.praises[idx] = saved;
     saveRoomBundle(code, bundle);
     return saved;
-  } catch {
-    return praise;
+  } catch (err) {
+    bundle.praises = bundle.praises.filter((p) => p.id !== praise.id);
+    saveRoomBundle(code, bundle);
+    throw err;
   }
 }
 

@@ -168,6 +168,54 @@ async function uniqueCodeAsync(): Promise<string> {
   throw new Error('CODE_GENERATION_FAILED');
 }
 
+const STATUS_RANK: Record<RoomStatus, number> = { ready: 0, active: 1, ended: 2 };
+
+function pickRoomStatus(a: RoomStatus, b: RoomStatus): RoomStatus {
+  return STATUS_RANK[a] >= STATUS_RANK[b] ? a : b;
+}
+
+function mergePraises(a: Praise[], b: Praise[]): Praise[] {
+  const map = new Map<string, Praise>();
+  for (const p of [...a, ...b]) {
+    const prev = map.get(p.id);
+    if (!prev || new Date(p.updated_at) >= new Date(prev.updated_at)) {
+      map.set(p.id, p);
+    }
+  }
+  return Array.from(map.values());
+}
+
+function mergeStudents(a: Student[], b: Student[]): Student[] {
+  const map = new Map(b.map((s) => [s.id, { ...s }]));
+  for (const s of a) {
+    const existing = map.get(s.id);
+    if (existing) {
+      map.set(s.id, { ...existing, device_id: existing.device_id ?? s.device_id });
+    } else {
+      map.set(s.id, s);
+    }
+  }
+  return Array.from(map.values());
+}
+
+function mergeBundles(existing: RoomBundle, incoming: RoomBundle): RoomBundle {
+  return {
+    room: {
+      ...incoming.room,
+      status: pickRoomStatus(existing.room.status, incoming.room.status),
+    },
+    students: mergeStudents(existing.students, incoming.students),
+    praises: mergePraises(existing.praises, incoming.praises),
+  };
+}
+
+async function resolveBundle(roomId: string, code?: string): Promise<RoomBundle | undefined> {
+  const byId = await findBundleByRoomId(roomId);
+  if (byId) return byId;
+  if (code) return loadBundle(code.toUpperCase());
+  return undefined;
+}
+
 export default async function handler(req: Request) {
   if (req.method === 'OPTIONS') {
     return new Response(null, {
@@ -256,7 +304,9 @@ export default async function handler(req: Request) {
           students: students as Student[],
           praises: (Array.isArray(praises) ? praises : []) as Praise[],
         };
-        await persistBundle(roomCode, bundle);
+        const existing = await loadBundle(roomCode);
+        const merged = existing ? mergeBundles(existing, bundle) : bundle;
+        await persistBundle(roomCode, merged);
         return json({ ok: true });
       }
 
@@ -274,7 +324,8 @@ export default async function handler(req: Request) {
       case 'claim': {
         if (req.method !== 'POST') return error('Method not allowed', 405);
         const { roomId, studentId, deviceId } = body;
-        const bundle = await findBundleByRoomId(String(roomId));
+        const roomCode = String(body.code ?? code ?? '').toUpperCase();
+        const bundle = await resolveBundle(String(roomId), roomCode || undefined);
         if (!bundle) return error('학급을 찾을 수 없어요.', 404);
         const student = bundle.students.find((s) => s.id === studentId);
         if (!student) return error('학생을 찾을 수 없어요.', 404);
@@ -289,7 +340,8 @@ export default async function handler(req: Request) {
       case 'praise-create': {
         if (req.method !== 'POST') return error('Method not allowed', 405);
         const { roomId, fromStudentId, toStudentId, content, color } = body;
-        const bundle = await findBundleByRoomId(String(roomId));
+        const roomCode = String(body.code ?? code ?? '').toUpperCase();
+        const bundle = await resolveBundle(String(roomId), roomCode || undefined);
         if (!bundle) return error('학급을 찾을 수 없어요.', 404);
         if (bundle.room.status === 'ended') return error('활동이 끝났어요.', 403);
         if (bundle.room.status === 'ready') return error('아직 활동이 시작되지 않았어요.', 403);
