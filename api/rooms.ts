@@ -1,18 +1,79 @@
-import type { VercelRequest, VercelResponse } from '@vercel/node';
-import {
-  assertActive,
-  assertHost,
-  findStudent,
-  getByCode,
-  newId,
-  nowIso,
-  saveBundle,
-  store,
-  type RoomBundle,
-} from './_store';
-import { ROOM_EXPIRY_HOURS } from './types';
+export const config = { runtime: 'edge' };
 
+type RoomStatus = 'ready' | 'active' | 'ended';
+
+interface Room {
+  id: string;
+  code: string;
+  class_name: string;
+  status: RoomStatus;
+  host_token: string;
+  expires_at: string;
+  created_at: string;
+}
+
+interface Student {
+  id: string;
+  room_id: string;
+  name: string;
+  device_id: string | null;
+  created_at: string;
+}
+
+interface Praise {
+  id: string;
+  room_id: string;
+  from_student_id: string;
+  to_student_id: string;
+  content: string;
+  color: string;
+  deleted: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+interface RoomBundle {
+  room: Room;
+  students: Student[];
+  praises: Praise[];
+}
+
+const ROOM_EXPIRY_HOURS = 24;
 const CARD_COLORS = ['#FFE066', '#B8E986', '#FFD3E0', '#C7CEEA', '#FFAAA5'];
+
+// eslint-disable-next-line no-var
+declare var __rpStore: Map<string, RoomBundle> | undefined;
+
+function getStore(): Map<string, RoomBundle> {
+  if (!globalThis.__rpStore) {
+    globalThis.__rpStore = new Map();
+  }
+  return globalThis.__rpStore;
+}
+
+function json(data: unknown, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+    },
+  });
+}
+
+function error(message: string, status: number) {
+  return json({ error: message }, status);
+}
+
+function newId(): string {
+  return crypto.randomUUID();
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
 
 function generateRoomCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -23,11 +84,7 @@ function generateRoomCode(): string {
   return code;
 }
 
-function generateHostToken(): string {
-  return crypto.randomUUID();
-}
-
-function uniqueCode(): string {
+function uniqueCode(store: Map<string, RoomBundle>): string {
   for (let i = 0; i < 20; i++) {
     const code = generateRoomCode();
     if (!store.has(code)) return code;
@@ -35,49 +92,74 @@ function uniqueCode(): string {
   throw new Error('CODE_GENERATION_FAILED');
 }
 
-function sendError(res: VercelResponse, status: number, message: string) {
-  res.status(status).json({ error: message });
+function getByCode(store: Map<string, RoomBundle>, code: string): RoomBundle | undefined {
+  const bundle = store.get(code.toUpperCase());
+  if (!bundle) return undefined;
+  if (new Date(bundle.room.expires_at) < new Date()) {
+    store.delete(code.toUpperCase());
+    return undefined;
+  }
+  return bundle;
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+function saveBundle(store: Map<string, RoomBundle>, code: string, bundle: RoomBundle) {
+  store.set(code.toUpperCase(), bundle);
+}
 
+export default async function handler(req: Request) {
   if (req.method === 'OPTIONS') {
-    return res.status(200).end();
+    return new Response(null, {
+      status: 200,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type',
+      },
+    });
   }
 
-  const action = (req.query.action as string) ?? req.body?.action;
-  const code = ((req.query.code as string) ?? req.body?.code ?? '').toUpperCase();
+  const url = new URL(req.url);
+  let body: Record<string, unknown> = {};
+  if (req.method !== 'GET' && req.headers.get('content-type')?.includes('json')) {
+    try {
+      body = await req.json();
+    } catch {
+      return error('Invalid JSON body', 400);
+    }
+  }
+
+  const action = url.searchParams.get('action') ?? (body.action as string);
+  const code = (url.searchParams.get('code') ?? (body.code as string) ?? '').toUpperCase();
+  const store = getStore();
 
   try {
     switch (action) {
       case 'create': {
-        if (req.method !== 'POST') return sendError(res, 405, 'Method not allowed');
-        const { className, studentNames } = req.body ?? {};
-        if (!className?.trim()) return sendError(res, 400, '학급 이름을 입력해 주세요.');
+        if (req.method !== 'POST') return error('Method not allowed', 405);
+        const className = String(body.className ?? '').trim();
+        const studentNames = body.studentNames;
+        if (!className) return error('학급 이름을 입력해 주세요.', 400);
         if (!Array.isArray(studentNames) || studentNames.length === 0) {
-          return sendError(res, 400, '학생 이름을 1명 이상 입력해 주세요.');
+          return error('학생 이름을 1명 이상 입력해 주세요.', 400);
         }
 
-        const roomCode = uniqueCode();
+        const roomCode = uniqueCode(store);
         const roomId = newId();
-        const hostToken = generateHostToken();
+        const hostToken = newId();
         const createdAt = nowIso();
         const expiresAt = new Date(Date.now() + ROOM_EXPIRY_HOURS * 60 * 60 * 1000).toISOString();
 
-        const room = {
+        const room: Room = {
           id: roomId,
           code: roomCode,
-          class_name: className.trim(),
-          status: 'ready' as const,
+          class_name: className,
+          status: 'ready',
           host_token: hostToken,
           expires_at: expiresAt,
           created_at: createdAt,
         };
 
-        const students = studentNames.map((name: string) => ({
+        const students: Student[] = studentNames.map((name: unknown) => ({
           id: newId(),
           room_id: roomId,
           name: String(name).trim(),
@@ -86,113 +168,112 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }));
 
         const bundle: RoomBundle = { room, students, praises: [] };
-        saveBundle(roomCode, bundle);
-        return res.status(201).json({ room, students });
+        saveBundle(store, roomCode, bundle);
+        return json({ room, students }, 201);
       }
 
       case 'get': {
-        if (req.method !== 'GET') return sendError(res, 405, 'Method not allowed');
-        if (!code) return sendError(res, 400, '학급 코드가 필요합니다.');
-        const bundle = getByCode(code);
-        if (!bundle) return sendError(res, 404, '학급을 찾을 수 없어요.');
-        return res.status(200).json(bundle);
+        if (req.method !== 'GET') return error('Method not allowed', 405);
+        if (!code) return error('학급 코드가 필요합니다.', 400);
+        const bundle = getByCode(store, code);
+        if (!bundle) return error('학급을 찾을 수 없어요.', 404);
+        return json(bundle);
       }
 
       case 'status': {
-        if (req.method !== 'PATCH') return sendError(res, 405, 'Method not allowed');
-        const { roomId, hostToken, status } = req.body ?? {};
+        if (req.method !== 'PATCH') return error('Method not allowed', 405);
+        const { roomId, hostToken, status } = body;
         const bundle = [...store.values()].find((b) => b.room.id === roomId);
-        if (!bundle) return sendError(res, 404, '학급을 찾을 수 없어요.');
-        assertHost(bundle, hostToken);
-        bundle.room.status = status;
-        saveBundle(bundle.room.code, bundle);
-        return res.status(200).json({ room: bundle.room });
+        if (!bundle) return error('학급을 찾을 수 없어요.', 404);
+        if (bundle.room.host_token !== hostToken) return error('권한이 없어요.', 403);
+        bundle.room.status = status as RoomStatus;
+        saveBundle(store, bundle.room.code, bundle);
+        return json({ room: bundle.room });
       }
 
       case 'claim': {
-        if (req.method !== 'POST') return sendError(res, 405, 'Method not allowed');
-        const { roomId, studentId, deviceId } = req.body ?? {};
+        if (req.method !== 'POST') return error('Method not allowed', 405);
+        const { roomId, studentId, deviceId } = body;
         const bundle = [...store.values()].find((b) => b.room.id === roomId);
-        if (!bundle) return sendError(res, 404, '학급을 찾을 수 없어요.');
-        const student = findStudent(bundle, studentId);
-        if (!student) return sendError(res, 404, '학생을 찾을 수 없어요.');
+        if (!bundle) return error('학급을 찾을 수 없어요.', 404);
+        const student = bundle.students.find((s) => s.id === studentId);
+        if (!student) return error('학생을 찾을 수 없어요.', 404);
         if (student.device_id && student.device_id !== deviceId) {
-          return sendError(res, 409, '이미 사용 중인 이름이에요.');
+          return error('이미 사용 중인 이름이에요.', 409);
         }
-        if (!student.device_id) student.device_id = deviceId;
-        saveBundle(bundle.room.code, bundle);
-        return res.status(200).json({ ok: true });
+        if (!student.device_id) student.device_id = String(deviceId);
+        saveBundle(store, bundle.room.code, bundle);
+        return json({ ok: true });
       }
 
       case 'praise-create': {
-        if (req.method !== 'POST') return sendError(res, 405, 'Method not allowed');
-        const { roomId, fromStudentId, toStudentId, content, color } = req.body ?? {};
+        if (req.method !== 'POST') return error('Method not allowed', 405);
+        const { roomId, fromStudentId, toStudentId, content, color } = body;
         const bundle = [...store.values()].find((b) => b.room.id === roomId);
-        if (!bundle) return sendError(res, 404, '학급을 찾을 수 없어요.');
-        assertActive(bundle);
-        if (bundle.room.status === 'ready') return sendError(res, 403, '아직 활동이 시작되지 않았어요.');
-        if (fromStudentId === toStudentId) return sendError(res, 400, '자기 자신에게는 칭찬할 수 없어요.');
-        if (content.length < 10 || content.length > 200) {
-          return sendError(res, 400, '칭찬은 10~200자로 작성해 주세요.');
+        if (!bundle) return error('학급을 찾을 수 없어요.', 404);
+        if (bundle.room.status === 'ended') return error('활동이 끝났어요.', 403);
+        if (bundle.room.status === 'ready') return error('아직 활동이 시작되지 않았어요.', 403);
+        if (fromStudentId === toStudentId) return error('자기 자신에게는 칭찬할 수 없어요.', 400);
+        const text = String(content);
+        if (text.length < 10 || text.length > 200) {
+          return error('칭찬은 10~200자로 작성해 주세요.', 400);
         }
         const exists = bundle.praises.some(
           (p) => p.from_student_id === fromStudentId && p.to_student_id === toStudentId && !p.deleted,
         );
-        if (exists) return sendError(res, 409, '이미 이 친구에게 칭찬을 썼어요.');
+        if (exists) return error('이미 이 친구에게 칭찬을 썼어요.', 409);
 
-        const praise = {
+        const praise: Praise = {
           id: newId(),
-          room_id: roomId,
-          from_student_id: fromStudentId,
-          to_student_id: toStudentId,
-          content,
-          color: color ?? CARD_COLORS[0],
+          room_id: String(roomId),
+          from_student_id: String(fromStudentId),
+          to_student_id: String(toStudentId),
+          content: text,
+          color: String(color ?? CARD_COLORS[0]),
           deleted: false,
           created_at: nowIso(),
           updated_at: nowIso(),
         };
         bundle.praises.push(praise);
-        saveBundle(bundle.room.code, bundle);
-        return res.status(201).json({ praise });
+        saveBundle(store, bundle.room.code, bundle);
+        return json({ praise }, 201);
       }
 
       case 'praise-update': {
-        if (req.method !== 'PATCH') return sendError(res, 405, 'Method not allowed');
-        const { roomId, praiseId, content, color } = req.body ?? {};
+        if (req.method !== 'PATCH') return error('Method not allowed', 405);
+        const { roomId, praiseId, content, color } = body;
         const bundle = [...store.values()].find((b) => b.room.id === roomId);
-        if (!bundle) return sendError(res, 404, '학급을 찾을 수 없어요.');
-        assertActive(bundle);
+        if (!bundle) return error('학급을 찾을 수 없어요.', 404);
+        if (bundle.room.status === 'ended') return error('활동이 끝났어요.', 403);
         const praise = bundle.praises.find((p) => p.id === praiseId);
-        if (!praise || praise.deleted) return sendError(res, 404, '칭찬을 찾을 수 없어요.');
+        if (!praise || praise.deleted) return error('칭찬을 찾을 수 없어요.', 404);
         const elapsed = Date.now() - new Date(praise.created_at).getTime();
-        if (elapsed > 2 * 60 * 1000) return sendError(res, 403, '수정 시간이 지났어요.');
-        praise.content = content;
-        praise.color = color;
+        if (elapsed > 2 * 60 * 1000) return error('수정 시간이 지났어요.', 403);
+        praise.content = String(content);
+        praise.color = String(color);
         praise.updated_at = nowIso();
-        saveBundle(bundle.room.code, bundle);
-        return res.status(200).json({ praise });
+        saveBundle(store, bundle.room.code, bundle);
+        return json({ praise });
       }
 
       case 'praise-delete': {
-        if (req.method !== 'DELETE' && req.method !== 'POST') return sendError(res, 405, 'Method not allowed');
-        const { roomId, praiseId, hostToken } = req.body ?? {};
+        if (req.method !== 'POST' && req.method !== 'DELETE') return error('Method not allowed', 405);
+        const { roomId, praiseId, hostToken } = body;
         const bundle = [...store.values()].find((b) => b.room.id === roomId);
-        if (!bundle) return sendError(res, 404, '학급을 찾을 수 없어요.');
-        assertHost(bundle, hostToken);
+        if (!bundle) return error('학급을 찾을 수 없어요.', 404);
+        if (bundle.room.host_token !== hostToken) return error('권한이 없어요.', 403);
         const praise = bundle.praises.find((p) => p.id === praiseId);
-        if (!praise) return sendError(res, 404, '칭찬을 찾을 수 없어요.');
+        if (!praise) return error('칭찬을 찾을 수 없어요.', 404);
         praise.deleted = true;
-        saveBundle(bundle.room.code, bundle);
-        return res.status(200).json({ ok: true });
+        saveBundle(store, bundle.room.code, bundle);
+        return json({ ok: true });
       }
 
       default:
-        return sendError(res, 400, 'Unknown action');
+        return error('Unknown action', 400);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Server error';
-    if (msg === 'UNAUTHORIZED') return sendError(res, 403, '권한이 없어요.');
-    if (msg === 'SESSION_ENDED') return sendError(res, 403, '활동이 끝났어요.');
-    return sendError(res, 500, msg);
+    return error(msg, 500);
   }
 }
