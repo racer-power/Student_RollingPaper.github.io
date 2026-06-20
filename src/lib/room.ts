@@ -1,5 +1,12 @@
 import type { Praise, Room, Student, StudentStats, RoomBundle } from '../types';
-import { getDeviceId, loadRoomBundle, saveRoomBundle } from './storage';
+import {
+  getDeviceId,
+  getHostToken,
+  loadRoomBundle,
+  saveRoomBundle,
+} from './storage';
+import { generateHostToken, generateRoomCode } from './utils';
+import { ROOM_EXPIRY_HOURS } from './constants';
 
 const API = '/api/rooms';
 
@@ -25,12 +32,19 @@ async function api<T>(
   return data as T;
 }
 
+function isHost(bundle: RoomBundle, code: string): boolean {
+  const token = getHostToken(code);
+  return !!token && bundle.room.host_token === token;
+}
+
 async function fetchBundle(code: string): Promise<RoomBundle> {
   const cached = loadRoomBundle(code);
   if (cached) {
-    api<RoomBundle>('get', { code })
-      .then((fresh) => saveRoomBundle(code, fresh))
-      .catch(() => {});
+    if (!isHost(cached, code)) {
+      api<RoomBundle>('get', { code })
+        .then((fresh) => saveRoomBundle(code, fresh))
+        .catch(() => {});
+    }
     return cached;
   }
   const bundle = await api<RoomBundle>('get', { code });
@@ -47,17 +61,51 @@ function attachStudentNames(praises: Praise[], students: Student[]): Praise[] {
   }));
 }
 
+function createLocalRoom(className: string, studentNames: string[]): RoomBundle {
+  const roomCode = generateRoomCode();
+  const roomId = crypto.randomUUID();
+  const hostToken = generateHostToken();
+  const createdAt = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + ROOM_EXPIRY_HOURS * 60 * 60 * 1000).toISOString();
+
+  const room: Room = {
+    id: roomId,
+    code: roomCode,
+    class_name: className,
+    status: 'ready',
+    host_token: hostToken,
+    expires_at: expiresAt,
+    created_at: createdAt,
+  };
+
+  const students: Student[] = studentNames.map((name) => ({
+    id: crypto.randomUUID(),
+    room_id: roomId,
+    name,
+    device_id: null,
+    created_at: createdAt,
+  }));
+
+  return { room, students, praises: [] };
+}
+
 export async function createRoom(className: string, studentNames: string[]) {
-  const data = await api<{ room: Room; students: Student[] }>('create', {
-    method: 'POST',
-    body: { className, studentNames },
-  });
-  saveRoomBundle(data.room.code, {
-    room: data.room,
-    students: data.students,
-    praises: [],
-  });
-  return data.room;
+  try {
+    const data = await api<{ room: Room; students: Student[] }>('create', {
+      method: 'POST',
+      body: { className, studentNames },
+    });
+    saveRoomBundle(data.room.code, {
+      room: data.room,
+      students: data.students,
+      praises: [],
+    });
+    return data.room;
+  } catch {
+    const bundle = createLocalRoom(className, studentNames);
+    saveRoomBundle(bundle.room.code, bundle);
+    return bundle.room;
+  }
 }
 
 export async function getRoomByCode(code: string): Promise<Room | null> {
@@ -68,7 +116,7 @@ export async function getRoomByCode(code: string): Promise<Room | null> {
     saveRoomBundle(code, bundle);
     return bundle.room;
   } catch {
-    return null;
+    return loadRoomBundle(code)?.room ?? null;
   }
 }
 
@@ -83,16 +131,25 @@ export async function claimStudentName(
   deviceId: string,
   code: string,
 ): Promise<{ ok: true } | { ok: false; reason: 'taken' }> {
-  try {
-    await api('claim', { method: 'POST', body: { roomId, studentId, deviceId } });
-    const bundle = loadRoomBundle(code);
-    if (bundle) {
-      const student = bundle.students.find((s) => s.id === studentId);
-      if (student) student.device_id = deviceId;
+  const bundle = loadRoomBundle(code);
+  if (bundle) {
+    const student = bundle.students.find((s) => s.id === studentId);
+    if (student) {
+      if (student.device_id && student.device_id !== deviceId) {
+        return { ok: false, reason: 'taken' };
+      }
+      student.device_id = deviceId;
       saveRoomBundle(code, bundle);
     }
+  }
+
+  try {
+    await api('claim', { method: 'POST', body: { roomId, studentId, deviceId } });
     return { ok: true };
   } catch (err) {
+    if (bundle && bundle.students.find((s) => s.id === studentId)?.device_id === deviceId) {
+      return { ok: true };
+    }
     if (err instanceof Error && err.message.includes('사용 중')) {
       return { ok: false, reason: 'taken' };
     }
@@ -106,16 +163,25 @@ export async function updateRoomStatus(
   status: Room['status'],
   code: string,
 ) {
-  const { room } = await api<{ room: Room }>('status', {
-    method: 'PATCH',
-    body: { roomId, hostToken, status },
-  });
   const bundle = loadRoomBundle(code);
-  if (bundle) {
+  if (!bundle || bundle.room.host_token !== hostToken) {
+    throw new Error('교사 권한이 없어요.');
+  }
+
+  bundle.room.status = status;
+  saveRoomBundle(code, bundle);
+
+  try {
+    const { room } = await api<{ room: Room }>('status', {
+      method: 'PATCH',
+      body: { roomId, hostToken, status },
+    });
     bundle.room = room;
     saveRoomBundle(code, bundle);
+    return room;
+  } catch {
+    return bundle.room;
   }
-  return room;
 }
 
 export async function getPraises(code: string): Promise<Praise[]> {
@@ -136,16 +202,35 @@ export async function createPraise(
   color: string,
   code: string,
 ) {
-  const { praise } = await api<{ praise: Praise }>('praise-create', {
-    method: 'POST',
-    body: { roomId, fromStudentId, toStudentId, content, color },
-  });
-  const bundle = loadRoomBundle(code);
-  if (bundle) {
-    bundle.praises.push(praise);
+  const bundle = loadRoomBundle(code) ?? (await fetchBundle(code));
+
+  const praise: Praise = {
+    id: crypto.randomUUID(),
+    room_id: roomId,
+    from_student_id: fromStudentId,
+    to_student_id: toStudentId,
+    content,
+    color,
+    deleted: false,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  bundle.praises.push(praise);
+  saveRoomBundle(code, bundle);
+
+  try {
+    const { praise: saved } = await api<{ praise: Praise }>('praise-create', {
+      method: 'POST',
+      body: { roomId, fromStudentId, toStudentId, content, color },
+    });
+    const idx = bundle.praises.findIndex((p) => p.id === praise.id);
+    if (idx >= 0) bundle.praises[idx] = saved;
     saveRoomBundle(code, bundle);
+    return saved;
+  } catch {
+    return praise;
   }
-  return praise;
 }
 
 export async function updatePraise(
@@ -155,29 +240,50 @@ export async function updatePraise(
   roomId: string,
   code: string,
 ) {
-  const { praise } = await api<{ praise: Praise }>('praise-update', {
-    method: 'PATCH',
-    body: { roomId, praiseId, content, color },
-  });
   const bundle = loadRoomBundle(code);
-  if (bundle) {
+  if (!bundle) throw new Error('학급을 찾을 수 없어요.');
+
+  const praise = bundle.praises.find((p) => p.id === praiseId);
+  if (!praise || praise.deleted) throw new Error('칭찬을 찾을 수 없어요.');
+
+  praise.content = content;
+  praise.color = color;
+  praise.updated_at = new Date().toISOString();
+  saveRoomBundle(code, bundle);
+
+  try {
+    const { praise: saved } = await api<{ praise: Praise }>('praise-update', {
+      method: 'PATCH',
+      body: { roomId, praiseId, content, color },
+    });
     const idx = bundle.praises.findIndex((p) => p.id === praiseId);
-    if (idx >= 0) bundle.praises[idx] = praise;
+    if (idx >= 0) bundle.praises[idx] = saved;
     saveRoomBundle(code, bundle);
+    return saved;
+  } catch {
+    return praise;
   }
-  return praise;
 }
 
 export async function deletePraise(praiseId: string, hostToken: string, roomId: string, code: string) {
-  await api('praise-delete', {
-    method: 'POST',
-    body: { roomId, praiseId, hostToken },
-  });
   const bundle = loadRoomBundle(code);
-  if (bundle) {
-    const praise = bundle.praises.find((p) => p.id === praiseId);
-    if (praise) praise.deleted = true;
+  if (!bundle || bundle.room.host_token !== hostToken) {
+    throw new Error('권한이 없어요.');
+  }
+
+  const praise = bundle.praises.find((p) => p.id === praiseId);
+  if (praise) {
+    praise.deleted = true;
     saveRoomBundle(code, bundle);
+  }
+
+  try {
+    await api('praise-delete', {
+      method: 'POST',
+      body: { roomId, praiseId, hostToken },
+    });
+  } catch {
+    /* local already updated */
   }
 }
 

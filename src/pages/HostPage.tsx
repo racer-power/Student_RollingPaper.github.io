@@ -32,6 +32,7 @@ export function HostPage() {
     if (r) {
       setStats(await getStudentStats(code));
       setPraises(await getPraises(code));
+      setError('');
     }
   }
 
@@ -52,6 +53,7 @@ export function HostPage() {
     try {
       const updated = await updateRoomStatus(room.id, hostToken, status, code!);
       setRoom(updated);
+      setError('');
     } catch (err) {
       setError(err instanceof Error ? err.message : '상태 변경 실패');
     }
