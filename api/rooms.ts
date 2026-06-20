@@ -241,6 +241,25 @@ export default async function handler(req: Request) {
         return json(bundle);
       }
 
+      case 'sync': {
+        if (req.method !== 'POST') return error('Method not allowed', 405);
+        const { hostToken, room, students, praises } = body;
+        if (!room || typeof room !== 'object') return error('학급 정보가 필요합니다.', 400);
+        const roomData = room as Room;
+        const roomCode = String(roomData.code ?? '').toUpperCase();
+        if (!roomCode || !hostToken || hostToken !== roomData.host_token) {
+          return error('권한이 없어요.', 403);
+        }
+        if (!Array.isArray(students)) return error('학생 명단이 필요합니다.', 400);
+        const bundle: RoomBundle = {
+          room: { ...roomData, code: roomCode },
+          students: students as Student[],
+          praises: (Array.isArray(praises) ? praises : []) as Praise[],
+        };
+        await persistBundle(roomCode, bundle);
+        return json({ ok: true });
+      }
+
       case 'status': {
         if (req.method !== 'PATCH') return error('Method not allowed', 405);
         const { roomId, hostToken, status } = body;

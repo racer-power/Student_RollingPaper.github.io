@@ -27,12 +27,16 @@ export function HostPage() {
 
   async function load() {
     if (!code) return;
-    const r = await getRoomByCode(code);
-    setRoom(r);
-    if (r) {
-      setStats(await getStudentStats(code));
-      setPraises(await getPraises(code));
-      setError('');
+    try {
+      const r = await getRoomByCode(code);
+      setRoom(r);
+      if (r) {
+        setStats(await getStudentStats(code));
+        setPraises(await getPraises(code));
+        setError('');
+      }
+    } catch {
+      /* local cache still shown via getRoomByCode fallback */
     }
   }
 

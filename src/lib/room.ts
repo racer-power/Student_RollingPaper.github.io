@@ -23,6 +23,7 @@ async function api<T>(
     method,
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
     body: body ? JSON.stringify({ action, ...body }) : undefined,
+    cache: method === 'GET' ? 'no-store' : undefined,
   });
 
   const data = await res.json().catch(() => ({}));
@@ -37,19 +38,36 @@ function isHost(bundle: RoomBundle, code: string): boolean {
   return !!token && bundle.room.host_token === token;
 }
 
+export async function syncRoomToServer(code: string): Promise<void> {
+  const bundle = loadRoomBundle(code);
+  const hostToken = getHostToken(code);
+  if (!bundle || !hostToken || bundle.room.host_token !== hostToken) return;
+
+  await api('sync', {
+    method: 'POST',
+    body: {
+      hostToken,
+      room: bundle.room,
+      students: bundle.students,
+      praises: bundle.praises,
+    },
+  });
+}
+
 async function fetchBundle(code: string): Promise<RoomBundle> {
   const cached = loadRoomBundle(code);
-  if (cached) {
-    if (!isHost(cached, code)) {
-      api<RoomBundle>('get', { code })
-        .then((fresh) => saveRoomBundle(code, fresh))
-        .catch(() => {});
-    }
-    return cached;
+  if (cached && isHost(cached, code)) {
+    await syncRoomToServer(code).catch(() => {});
   }
-  const bundle = await api<RoomBundle>('get', { code });
-  saveRoomBundle(code, bundle);
-  return bundle;
+
+  try {
+    const bundle = await api<RoomBundle>('get', { code });
+    saveRoomBundle(code, bundle);
+    return bundle;
+  } catch {
+    if (cached) return cached;
+    throw new Error('학급을 찾을 수 없어요.');
+  }
 }
 
 function attachStudentNames(praises: Praise[], students: Student[]): Praise[] {
@@ -110,7 +128,10 @@ export async function createRoom(className: string, studentNames: string[]) {
 
 export async function getRoomByCode(code: string): Promise<Room | null> {
   const cached = loadRoomBundle(code);
-  if (cached) return cached.room;
+  if (cached && isHost(cached, code)) {
+    await syncRoomToServer(code).catch(() => {});
+  }
+
   try {
     const bundle = await api<RoomBundle>('get', { code });
     saveRoomBundle(code, bundle);
@@ -172,6 +193,7 @@ export async function updateRoomStatus(
   saveRoomBundle(code, bundle);
 
   try {
+    await syncRoomToServer(code);
     const { room } = await api<{ room: Room }>('status', {
       method: 'PATCH',
       body: { roomId, hostToken, status },

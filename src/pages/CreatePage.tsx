@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Layout } from '../components/Layout';
-import { createRoom } from '../lib/room';
+import { createRoom, syncRoomToServer } from '../lib/room';
 import { parseStudentNames } from '../lib/utils';
 import { setHostToken } from '../lib/storage';
 
@@ -30,6 +30,7 @@ export function CreatePage() {
     try {
       const room = await createRoom(className.trim(), names);
       setHostToken(room.code, room.host_token);
+      await syncRoomToServer(room.code).catch(() => {});
       navigate(`/room/${room.code}/host`);
     } catch (err) {
       setError(err instanceof Error ? err.message : '생성에 실패했어요');

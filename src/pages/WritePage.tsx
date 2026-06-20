@@ -9,6 +9,7 @@ import {
   getPraises,
   getRoomByCode,
   getStudents,
+  subscribeToRoom,
   updatePraise,
 } from '../lib/room';
 import {
@@ -50,13 +51,18 @@ export function WritePage() {
 
   useEffect(() => {
     if (!code || !session) return;
-    getRoomByCode(code).then(async (r) => {
+
+    async function refresh() {
+      const r = await getRoomByCode(code!);
       if (!r) return;
       setRoom(r);
-      const [s, p] = await Promise.all([getStudents(code), getPraises(code)]);
+      const [s, p] = await Promise.all([getStudents(code!), getPraises(code!)]);
       setStudents(s);
       setExistingPraises(p.filter((x) => !x.deleted));
-    });
+    }
+
+    refresh();
+    return subscribeToRoom(code, refresh);
   }, [code, session]);
 
   const saveDraftNow = useCallback(() => {
